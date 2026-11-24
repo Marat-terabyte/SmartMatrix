@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartMatrix.Cli", "src\SmartMatrix.Cli\SmartMatrix.Cli.csproj", "{A985C7E8-FA27-4FC2-84D4-4BAF945BD1E4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartMatrix.Tests", "tests\SmartMatrix.Tests\SmartMatrix.Tests.csproj", "{89E6C493-65A5-43AD-A30B-E53FA22C0F54}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A985C7E8-FA27-4FC2-84D4-4BAF945BD1E4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A985C7E8-FA27-4FC2-84D4-4BAF945BD1E4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A985C7E8-FA27-4FC2-84D4-4BAF945BD1E4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A985C7E8-FA27-4FC2-84D4-4BAF945BD1E4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{89E6C493-65A5-43AD-A30B-E53FA22C0F54}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{89E6C493-65A5-43AD-A30B-E53FA22C0F54}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{89E6C493-65A5-43AD-A30B-E53FA22C0F54}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{89E6C493-65A5-43AD-A30B-E53FA22C0F54}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
