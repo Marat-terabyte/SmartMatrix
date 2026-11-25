@@ -45,8 +45,36 @@ internal sealed class DrawingSession(
 
     public async Task SendAsync(RgbFrame frame, CancellationToken cancellationToken)
     {
+        WritePreview(frame);
         output.WriteLine($"Отправляю кадр на плату ({address})…");
         await transport.SendAsync(address, frame, cancellationToken);
         output.WriteLine("Плата подтвердила вывод кадра.");
+    }
+
+    private void WritePreview(RgbFrame frame)
+    {
+        output.WriteLine($"Превью {RgbFrame.Width}×{RgbFrame.Height}:");
+        Span<char> row = stackalloc char[RgbFrame.Width];
+        var nonBlack = 0;
+        byte maxRgb = 0;
+        for (var y = 0; y < RgbFrame.Height; y++)
+        {
+            var pixels = frame.Pixels.Slice(y * RgbFrame.Width, RgbFrame.Width);
+            for (var x = 0; x < RgbFrame.Width; x++)
+            {
+                var pixel = pixels[x];
+                row[x] = FramePalette.GetSymbol(pixel);
+                if (pixel != default)
+                    nonBlack++;
+                maxRgb = Math.Max(maxRgb, Math.Max(pixel.R, Math.Max(pixel.G, pixel.B)));
+            }
+
+            output.WriteLine(row);
+        }
+
+        output.WriteLine($"Палитра: {FramePalette.Legend}");
+        output.WriteLine($"Ненулевых пикселей: {nonBlack}/{RgbFrame.PixelCount}; максимум RGB: {maxRgb}/255.");
+        if (nonBlack == 0)
+            output.WriteLine("Предупреждение: кадр полностью чёрный и погасит матрицу.");
     }
 }

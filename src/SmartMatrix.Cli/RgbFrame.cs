@@ -31,40 +31,35 @@ internal sealed class RgbFrame
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object)
-            throw new FormatException("Ожидался JSON-объект с единственным полем pixels.");
+            throw new FormatException("Ожидался JSON-объект с единственным полем rows.");
 
         var properties = root.EnumerateObject();
-        if (!properties.MoveNext() || !properties.Current.NameEquals("pixels"))
-            throw new FormatException("Ожидался JSON-объект с единственным полем pixels.");
+        if (!properties.MoveNext() || !properties.Current.NameEquals("rows"))
+            throw new FormatException("Ожидался JSON-объект с единственным полем rows.");
 
         var source = properties.Current.Value;
         if (properties.MoveNext())
-            throw new FormatException("В JSON допустимо только одно поле pixels.");
+            throw new FormatException("В JSON допустимо только одно поле rows.");
 
-        if (source.ValueKind != JsonValueKind.Array || source.GetArrayLength() != PixelCount)
-            throw new FormatException($"В pixels должно быть ровно {PixelCount} пикселей.");
+        if (source.ValueKind != JsonValueKind.Array || source.GetArrayLength() != Height)
+            throw new FormatException($"В rows должно быть ровно {Height} строк.");
 
         var pixels = new RgbPixel[PixelCount];
-        var index = 0;
-        foreach (var pixel in source.EnumerateArray())
+        var y = 0;
+        foreach (var item in source.EnumerateArray())
         {
-            if (pixel.ValueKind != JsonValueKind.Array || pixel.GetArrayLength() != 3 ||
-                !TryReadChannel(pixel[0], out var r) ||
-                !TryReadChannel(pixel[1], out var g) ||
-                !TryReadChannel(pixel[2], out var b))
+            if (item.ValueKind != JsonValueKind.String || item.GetString() is not { Length: Width } row)
+                throw new FormatException($"Строка {y + 1}: ожидается ровно {Width} символов палитры.");
+
+            for (var x = 0; x < Width; x++)
             {
-                throw new FormatException($"Пиксель {index + 1}: ожидается [R,G,B] с целыми числами от 0 до 255.");
+                if (!FramePalette.TryGetPixel(row[x], out pixels[y * Width + x]))
+                    throw new FormatException($"Строка {y + 1}, столбец {x + 1}: символ не входит в палитру.");
             }
 
-            pixels[index++] = new RgbPixel(r, g, b);
+            y++;
         }
 
         return new RgbFrame(pixels);
-    }
-
-    private static bool TryReadChannel(JsonElement channel, out byte value)
-    {
-        value = 0;
-        return channel.ValueKind == JsonValueKind.Number && channel.TryGetByte(out value);
     }
 }

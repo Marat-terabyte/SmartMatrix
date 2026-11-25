@@ -6,12 +6,24 @@ namespace SmartMatrix.Cli;
 
 internal sealed class OpenAiApi(HttpClient http, Uri baseUrl, string apiKey)
 {
-    private const string FrameInstruction = """
-        Draw the user's request as a single 16x16 image. Return only a valid JSON object
-        with exactly one property, "pixels". Its value must contain exactly 256 RGB triples,
-        each an array [R,G,B] of three integers from 0 through 255. Start at the top left;
-        enumerate pixels left to right in every row, then top to bottom. Use [0,0,0] for
-        unlit pixels. Do not include coordinates, comments, prose, or Markdown fences.
+    private static readonly string FrameInstruction = $"""
+        Draw the user's request as a single {RgbFrame.Width}x{RgbFrame.Height} pixel-art image.
+        Use only these case-sensitive palette symbols: {FramePalette.Legend}.
+
+        Plan the picture before writing the rows:
+        1. Identify the main subject and any requested colors, pose, or composition. For a named
+           character or object, pick two to four distinctive features and their signature colors.
+        2. Make those features visible as separate blocks of pixels. Unless asked otherwise,
+           draw one large subject against a simple background, with filled shapes and strong contrast.
+           If details do not fit, simplify the pose or crop to a close-up that keeps the key features.
+        3. Check that the finished grid shows the requested subject and that its key features
+           are actually present. If not, revise the grid before answering. Never substitute an
+           unrelated icon or placeholder. Use a fully black frame only when requested.
+
+        Return only a JSON object with exactly one property, "rows". Its value is an array
+        of exactly {RgbFrame.Height} strings, each exactly {RgbFrame.Width} characters long.
+        Each character is one pixel. Write pixels left to right, and rows top to bottom.
+        Do not include spaces inside rows, your plan, prose, comments, or Markdown fences.
         """;
 
     public static bool TryGetBaseUrl(string input, out Uri? baseUrl)
