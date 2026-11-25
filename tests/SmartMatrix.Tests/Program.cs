@@ -149,7 +149,67 @@ var tests = new (string Name, Func<Task> Run)[]
         Equal(new RgbPixel(255, 255, 255), pixels[255]);
         foreach (var index in Enumerable.Range(0, pixels.Length).Except([0, 15, 240, 255]))
             Equal(new RgbPixel(0, 0, 0), pixels[index]);
-    }))
+    })),
+    ("drawing session sends successive prompts to the same model and board until a blank line", async () =>
+    {
+        var address = IPAddress.Parse("192.168.1.42");
+        var prompts = new List<string>();
+        var sentRedValues = new List<byte>();
+        using var apiHttp = new HttpClient(new FakeHandler(async (request, token) =>
+        {
+            Equal(HttpMethod.Post, request.Method);
+            Equal("Bearer example-key", request.Headers.Authorization!.ToString());
+            using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            Equal("example-model", payload.RootElement.GetProperty("model").GetString());
+            var messages = payload.RootElement.GetProperty("messages");
+            Equal(2, messages.GetArrayLength());
+            prompts.Add(messages[1].GetProperty("content").GetString()!);
+            return ModelResponse(FrameJson(first: $"[{prompts.Count},0,0]"));
+        }));
+        using var matrixHttp = new HttpClient(new FakeHandler(async (request, token) =>
+        {
+            Equal($"http://{address}/frame", request.RequestUri!.AbsoluteUri);
+            sentRedValues.Add((await request.Content!.ReadAsByteArrayAsync(token))[0]);
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }));
+        using var input = new StringReader("  Кот \nДом\n\nНе отправлять\n");
+        using var output = new StringWriter();
+        using var errors = new StringWriter();
+        var session = new DrawingSession(new HttpFrameTransport(matrixHttp), address, output, errors);
+
+        Equal(0, await session.RunAsync(CreateApi(apiHttp), "example-model", input, CancellationToken.None));
+        Equal("Кот,Дом", string.Join(",", prompts));
+        Equal("1,2", string.Join(",", sentRedValues));
+        Equal(string.Empty, errors.ToString());
+    }),
+    ("drawing session skips invalid frames and continues after a send failure until EOF", async () =>
+    {
+        var generated = 0;
+        var sentRedValues = new List<byte>();
+        using var apiHttp = new HttpClient(new FakeHandler((_, _) =>
+        {
+            generated++;
+            var frame = generated == 1 ? FrameJson(count: 255) : FrameJson(first: $"[{generated},0,0]");
+            return Task.FromResult(ModelResponse(frame));
+        }));
+        using var matrixHttp = new HttpClient(new FakeHandler(async (request, token) =>
+        {
+            sentRedValues.Add((await request.Content!.ReadAsByteArrayAsync(token))[0]);
+            return new HttpResponseMessage(sentRedValues.Count == 1
+                ? HttpStatusCode.BadRequest
+                : HttpStatusCode.NoContent);
+        }));
+        using var input = new StringReader("Кот\nДом\nМоре");
+        using var errors = new StringWriter();
+        var session = new DrawingSession(new HttpFrameTransport(matrixHttp), IPAddress.Loopback,
+            TextWriter.Null, errors);
+
+        Equal(1, await session.RunAsync(CreateApi(apiHttp), "example-model", input, CancellationToken.None));
+        Equal(3, generated);
+        Equal("2,3", string.Join(",", sentRedValues));
+        Equal(true, errors.ToString().Contains("256 пикселей"));
+        Equal(true, errors.ToString().Contains("HTTP 400"));
+    })
 };
 
 var failed = 0;
@@ -187,6 +247,9 @@ static OpenAiApi CreateApi(HttpClient http) =>
 
 static HttpResponseMessage JsonResponse(string content) =>
     new(HttpStatusCode.OK) { Content = new StringContent(content, Encoding.UTF8, "application/json") };
+
+static HttpResponseMessage ModelResponse(string content) =>
+    JsonResponse(JsonSerializer.Serialize(new { choices = new[] { new { message = new { content } } } }));
 
 static void Equal<T>(T expected, T actual)
 {

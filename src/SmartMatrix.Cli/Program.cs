@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.Json;
 using SmartMatrix.Cli;
 
 Console.OutputEncoding = Encoding.UTF8;
@@ -18,41 +17,8 @@ Console.CancelKeyPress += cancelHandler;
 try
 {
     var cancellationToken = cancellation.Token;
-    IPAddress address;
-    RgbFrame frame;
-    if (args is ["--test-frame"])
-    {
-        address = ReadMatrixAddress();
-        frame = RgbFrame.CreateTestPattern();
-    }
-    else if (args.Length == 0)
-    {
-        Uri? baseUrl;
-        while (!OpenAiApi.TryGetBaseUrl(
-            ReadRequired("Базовый URL OpenAI-совместимого API (например, https://api.openai.com/v1): "), out baseUrl))
-        {
-            Console.WriteLine("Введите абсолютный HTTP(S)-адрес без логина, пароля, параметров и фрагмента.");
-        }
-
-        if (baseUrl!.Scheme == Uri.UriSchemeHttp)
-            Console.WriteLine("Внимание: по HTTP ключ передаётся без шифрования.");
-
-        var apiKey = ReadApiKey();
-        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
-        {
-            Timeout = TimeSpan.FromMinutes(3),
-            MaxResponseContentBufferSize = 4 * 1024 * 1024
-        };
-        var api = new OpenAiApi(http, baseUrl, apiKey);
-        var model = await SelectModelAsync(api, cancellationToken);
-        var prompt = ReadRequired("Что нарисовать: ");
-        address = ReadMatrixAddress();
-
-        Console.WriteLine("Запрашиваю кадр у модели…");
-        var json = await api.GenerateAsync(model, prompt, cancellationToken);
-        frame = RgbFrame.ParseModelJson(json);
-    }
-    else
+    var testFrame = args is ["--test-frame"];
+    if (args.Length != 0 && !testFrame)
     {
         Console.Error.WriteLine("Запустите клиент без аргументов или с --test-frame для проверки матрицы.");
         return 1;
@@ -67,11 +33,35 @@ try
     {
         Timeout = TimeSpan.FromSeconds(10)
     };
-    IFrameTransport transport = new HttpFrameTransport(matrixHttp);
-    Console.WriteLine($"Отправляю кадр на плату ({address})…");
-    await transport.SendAsync(address, frame, cancellationToken);
-    Console.WriteLine("Плата подтвердила вывод кадра.");
-    return 0;
+    var transport = new HttpFrameTransport(matrixHttp);
+
+    if (testFrame)
+    {
+        var testSession = new DrawingSession(transport, ReadMatrixAddress(), Console.Out, Console.Error);
+        await testSession.SendAsync(RgbFrame.CreateTestPattern(), cancellationToken);
+        return 0;
+    }
+
+    Uri? baseUrl;
+    while (!OpenAiApi.TryGetBaseUrl(
+        ReadRequired("Базовый URL OpenAI-совместимого API (например, https://api.openai.com/v1): "), out baseUrl))
+    {
+        Console.WriteLine("Введите абсолютный HTTP(S)-адрес без логина, пароля, параметров и фрагмента.");
+    }
+
+    if (baseUrl!.Scheme == Uri.UriSchemeHttp)
+        Console.WriteLine("Внимание: по HTTP ключ передаётся без шифрования.");
+
+    var apiKey = ReadApiKey();
+    using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+    {
+        Timeout = TimeSpan.FromMinutes(3),
+        MaxResponseContentBufferSize = 4 * 1024 * 1024
+    };
+    var api = new OpenAiApi(http, baseUrl, apiKey);
+    var model = await SelectModelAsync(api, cancellationToken);
+    var session = new DrawingSession(transport, ReadMatrixAddress(), Console.Out, Console.Error);
+    return await session.RunAsync(api, model, Console.In, cancellationToken);
 }
 catch (OperationCanceledException)
 {
@@ -81,11 +71,6 @@ catch (OperationCanceledException)
 catch (EndOfStreamException)
 {
     Console.Error.WriteLine("Ввод завершён.");
-    return 1;
-}
-catch (JsonException)
-{
-    Console.Error.WriteLine("Модель не вернула корректный JSON. Кадр не отправлен.");
     return 1;
 }
 catch (Exception ex) when (ex is HttpRequestException or FormatException)
