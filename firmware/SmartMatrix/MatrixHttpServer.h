@@ -4,5 +4,4 @@
 
 using FrameRenderer = void (*)(const matrix::Rgb (&frame)[matrix::PixelCount]);
 
-bool StartFrameHttpServer();
-void PollFrameHttpServer(FrameRenderer render);
+void PollMatrixHttpServer(FrameRenderer render);

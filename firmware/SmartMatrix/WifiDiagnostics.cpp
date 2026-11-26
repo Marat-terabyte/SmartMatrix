@@ -61,6 +61,10 @@ void BeginWifiDiagnostics() {
   lastReport = millis();
 }
 
+bool WifiIsAssociated() {
+  return associated;
+}
+
 void PollWifiDiagnostics(wl_status_t status, bool hasIp) {
   if (connectedPending) {
     connectedPending = false;

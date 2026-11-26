@@ -1,8 +1,6 @@
-#include <ESP8266WiFi.h>
 #include <FastLED.h>
-#include "FrameHttpServer.h"
-#include "WifiDiagnostics.h"
-#include "secrets.h"
+#include "MatrixHttpServer.h"
+#include "WifiProvisioning.h"
 
 // Change these after the matrix is wired.
 constexpr uint8_t DataPin = D5;  // GPIO14 on NodeMCU 1.0
@@ -11,7 +9,6 @@ constexpr auto FirstPixel = matrix::FirstCorner::TopLeft;
 constexpr bool ShowStartupTest = false;
 
 CRGB leds[matrix::PixelCount];
-IPAddress lastIp;
 
 void RenderFrame(const matrix::Rgb (&frame)[matrix::PixelCount]);
 
@@ -44,35 +41,11 @@ void setup() {
     DrawStartupTest();
   }
 
-  BeginWifiDiagnostics();
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  Serial.println("Connecting to Wi-Fi (DHCP)...");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  wifi_setup::Begin();
 }
 
 void loop() {
-  const IPAddress noIp(0, 0, 0, 0);
-  const auto status = WiFi.status();
-  const IPAddress currentIp = status == WL_CONNECTED ? WiFi.localIP() : noIp;
-  PollWifiDiagnostics(status, currentIp != noIp);
-  if (currentIp != lastIp) {
-    lastIp = currentIp;
-    if (currentIp == noIp) {
-      Serial.println("Wi-Fi: IPv4 address lost.");
-    } else {
-      Serial.print("NodeMCU IPv4: ");
-      Serial.println(currentIp);
-      if (StartFrameHttpServer()) {
-        Serial.println("Listening on HTTP port 80 at POST /frame.");
-      } else {
-        Serial.println("Failed to start HTTP frame server.");
-      }
-    }
-  }
-
-  if (currentIp != noIp) {
-    PollFrameHttpServer(RenderFrame);
-  }
+  wifi_setup::Poll();
+  PollMatrixHttpServer(RenderFrame);
   delay(5);
 }
