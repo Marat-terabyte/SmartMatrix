@@ -13,6 +13,7 @@ const char DrawPage[] PROGMEM = R"HTML(<!doctype html>
 body{font:16px system-ui,sans-serif;max-width:36rem;margin:2rem auto;padding:0 1rem}
 label,input,textarea{display:block}label{margin:.8rem 0}
 input,textarea{font:inherit;width:100%;box-sizing:border-box}button{font:inherit}
+input[type=checkbox]{display:inline;width:auto}
 canvas{width:min(100%,256px);height:auto;image-rendering:pixelated;background:#000}
 </style>
 <h1>SmartMatrix</h1>
@@ -25,6 +26,8 @@ canvas{width:min(100%,256px);height:auto;image-rendering:pixelated;background:#0
 <label>Базовый URL API <input id="baseUrl" type="url" maxlength="240" placeholder="https://api.openai.com/v1" required></label>
 <label>ID модели <input id="model" maxlength="128" required></label>
 <label>Ключ API (если требуется) <input id="apiKey" type="password" maxlength="512" autocomplete="new-password"></label>
+<label><input id="insecureTls" type="checkbox"> Не проверять сертификат HTTPS</label>
+<p>Только для тестов: без проверки сертификата возможна подмена провайдера и перехват ключа.</p>
 <label>Свой корневой CA для HTTPS (необязательно, PEM)
 <textarea id="ca" rows="3" maxlength="4096" spellcheck="false"></textarea></label>
 <button id="save">Сохранить настройки</button>
@@ -79,15 +82,23 @@ function showFrame(rgb) {
   }
   canvas.hidden = false;
 }
+const insecureTlsOption = el('insecureTls');
+const ca = el('ca');
+function updateCertificateField() {
+  ca.disabled = insecureTlsOption.checked;
+}
+insecureTlsOption.addEventListener('change', updateCertificateField);
+updateCertificateField();
 el('config').addEventListener('submit', async event => {
   event.preventDefault();
   busy(true);
   status.textContent = 'Сохраняю настройки…';
   const apiKey = el('apiKey');
+  const insecureTls = insecureTlsOption.checked;
   try {
     await call('/api/config', {
       baseUrl: el('baseUrl').value.trim(), model: el('model').value.trim(),
-      apiKey: apiKey.value.trim(), ca: el('ca').value.trim()
+      apiKey: apiKey.value.trim(), ca: insecureTls ? '' : ca.value.trim(), insecureTls
     });
     apiKey.value = '';
     configured = true;

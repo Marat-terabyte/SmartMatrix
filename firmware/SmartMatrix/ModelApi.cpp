@@ -31,6 +31,7 @@ const char FrameInstruction[] PROGMEM =
 
 struct Settings {
   bool tls = false;
+  bool insecureTls = false;
   uint16_t port = 0;
   String host;
   String endpoint;
@@ -109,6 +110,9 @@ Result Fetch(WiFiClient& connection, String& payload, String& response,
   const int status = api.POST(reinterpret_cast<uint8_t*>(payload.begin()), payload.length());
   if (status < 0) {
     if (secure && secure->getLastSSLError() != 0) {
+      if (settings.insecureTls) {
+        return {502, F("Не удалось установить TLS. Проверьте адрес и поддержку TLS 1.2.")};
+      }
       return {502, F("Ошибка TLS: проверьте сертификат, имя хоста и поддержку TLS 1.2.")};
     }
     if (status == HTTPC_ERROR_READ_TIMEOUT) {
@@ -170,17 +174,23 @@ Result RequestFrame(const String& prompt, String& response) {
     return Fetch(plain, payload, response);
   }
 
-  if (time(nullptr) < EarliestValidTime) {
-    return {503, F("ESP ещё не синхронизировал часы для HTTPS. Проверьте доступ к NTP и повторите.")};
-  }
-  // ESP8266's TLS parser reads through pgm_read_byte, which also accepts RAM.
-  BearSSL::X509List roots(settings.ca.length() ? settings.ca.c_str() : DefaultRoots);
-  if (roots.getCount() == 0) {
-    return {503, F("Не удалось загрузить доверенные сертификаты.")};
+  BearSSL::X509List roots;
+  if (!settings.insecureTls) {
+    if (time(nullptr) < EarliestValidTime) {
+      return {503, F("ESP ещё не синхронизировал часы для HTTPS. Проверьте доступ к NTP и повторите.")};
+    }
+    // ESP8266's TLS parser reads through pgm_read_byte, which also accepts RAM.
+    if (!roots.append(settings.ca.length() ? settings.ca.c_str() : DefaultRoots) || roots.getCount() == 0) {
+      return {503, F("Не удалось загрузить доверенные сертификаты.")};
+    }
   }
   BearSSL::WiFiClientSecure secure;
   secure.setSSLVersion(BR_TLS12, BR_TLS12);
-  secure.setTrustAnchors(&roots);
+  if (settings.insecureTls) {
+    secure.setInsecure();
+  } else {
+    secure.setTrustAnchors(&roots);
+  }
   return Fetch(secure, payload, response, &secure);
 }
 
@@ -201,17 +211,23 @@ bool IsConfigured() {
 Result Configure(const char* body, unsigned int length) {
   JsonDocument json;
   if (deserializeJson(json, body, length, DeserializationOption::NestingLimit(2)) ||
-      !json.is<JsonObject>() || json.size() < 2 || json.size() > 4) {
-    return {400, F("Ожидаются адрес API, модель, необязательные ключ и CA (PEM).")};
+      !json.is<JsonObject>() || json.size() < 2 || json.size() > 5) {
+    return {400, F("Ожидаются адрес API и модель; ключ и параметры TLS необязательны.")};
   }
   bool hasKey = false;
   bool hasCa = false;
+  bool insecureTls = false;
   for (const JsonPairConst field : json.as<JsonObjectConst>()) {
     const std::string_view name(field.key().c_str(), field.key().size());
     if (name == "apiKey") {
       hasKey = true;
     } else if (name == "ca") {
       hasCa = true;
+    } else if (name == "insecureTls") {
+      if (!field.value().is<bool>()) {
+        return {400, F("insecureTls должен быть логическим значением.")};
+      }
+      insecureTls = field.value().as<bool>();
     } else if (name != "baseUrl" && name != "model") {
       return {400, F("Неизвестное поле настроек.")};
     }
@@ -229,8 +245,14 @@ Result Configure(const char* body, unsigned int length) {
     }
   }
   ProviderUrl url{};
-  if (!ParseProviderUrl(baseUrl, url) || (!url.tls && !ca.empty())) {
-    return {400, F("Укажите базовый HTTP(S)-адрес API без параметров. CA допускается только для HTTPS.")};
+  if (!ParseProviderUrl(baseUrl, url)) {
+    return {400, F("Укажите базовый HTTP(S)-адрес API без параметров.")};
+  }
+  if (!url.tls && (insecureTls || !ca.empty())) {
+    return {400, F("Параметры сертификата доступны только для HTTPS.")};
+  }
+  if (insecureTls && !ca.empty()) {
+    return {400, F("Не указывайте CA, если проверка сертификата отключена.")};
   }
   Settings next;
   if (!Append(next.host, url.host) || !Append(next.endpoint, url.path) ||
@@ -245,9 +267,10 @@ Result Configure(const char* body, unsigned int length) {
     }
   }
   next.tls = url.tls;
+  next.insecureTls = insecureTls;
   next.port = url.port;
   settings = std::move(next);
-  if (settings.tls) {
+  if (settings.tls && !settings.insecureTls) {
     BeginTimeSync();
   }
   return {204, nullptr};

@@ -12,6 +12,7 @@ const script = source.match(/R"JS\(([\s\S]*?)\)JS"/)[1];
 function page(replies) {
   const elements = Object.fromEntries(Array.from(html.matchAll(/ id="([^"]+)"/g), ([, id]) => [id, {
     value: '',
+    checked: false,
     disabled: false,
     hidden: id === 'preview',
     focus() {},
@@ -66,10 +67,36 @@ test('settings go once; two prompts contain no credentials and render the RGB pr
   assert.deepEqual(requests, [
     ['/api/config', 'GET', undefined],
     ['/api/config', 'POST', { baseUrl: 'https://provider.test/v1', model: 'drawing-model',
-      apiKey: 'fixture-token', ca: '' }],
+      apiKey: 'fixture-token', ca: '', insecureTls: false }],
     ['/api/draw', 'POST', { prompt: 'красный пиксель' }],
     ['/api/draw', 'POST', { prompt: 'погаси' }]
   ]);
+});
+
+test('ignoring certificates is opt-in and skips the custom CA', async () => {
+  const { elements: e, requests, submit } = page([
+    configState(false), new Response(null, { status: 204 }), new Response(null, { status: 204 })
+  ]);
+  await flush();
+  assert.equal(e.insecureTls.checked, false);
+  assert.equal(e.ca.disabled, false);
+  e.baseUrl.value = 'https://local-provider.test/v1';
+  e.model.value = 'drawing-model';
+  e.ca.value = 'fixture PEM';
+  e.insecureTls.checked = true;
+  e.insecureTls.change();
+  assert.equal(e.ca.disabled, true);
+  await submit('config');
+  assert.deepEqual(requests[1][2], {
+    baseUrl: 'https://local-provider.test/v1', model: 'drawing-model',
+    apiKey: '', ca: '', insecureTls: true
+  });
+  e.insecureTls.checked = false;
+  e.insecureTls.change();
+  assert.equal(e.ca.disabled, false);
+  await submit('config');
+  assert.equal(requests[2][2].ca, 'fixture PEM');
+  assert.equal(requests[2][2].insecureTls, false);
 });
 
 test('provider errors preserve preview; reboot reopens settings without a key', async () => {
