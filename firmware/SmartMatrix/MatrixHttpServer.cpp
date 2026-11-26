@@ -7,8 +7,10 @@
 
 #include <ESP8266WiFi.h>
 #include <lwip/tcp.h>
+#include <cstring>
 #include <memory>
 #include <new>
+#include <utility>
 
 namespace {
 
@@ -19,6 +21,7 @@ constexpr uint32_t RequestLimitMs = 5000;
 static_assert(sizeof(matrix::Rgb) == 3, "Wire RGB triples must have no padding.");
 
 WiFiServer server(Port);
+matrix::Rgb requestFrame[matrix::PixelCount];  // Both drawing routes are serialized by loop().
 
 void SendStatus(WiFiClient& client, Status status) {
   switch (status) {
@@ -126,17 +129,24 @@ bool WaitForData(WiFiClient& client, uint32_t started) {
 
 std::string_view ReadHeaders(WiFiClient& client, uint32_t started) {
   static char headers[frame_http::MaxHeaderBytes];  // One request at a time in loop().
-  for (size_t i = 0; i < sizeof(headers); ++i) {
+  matrix_http::HeaderEnd boundary;
+  size_t length = 0;
+  while (length < sizeof(headers)) {
     if (!WaitForData(client, started)) {
       return {};
     }
-    const int next = client.read();
-    if (next < 0) {
+    const size_t available = client.peekAvailable();
+    const char* bytes = client.peekBuffer();
+    if (!available || !bytes) {
       return {};
     }
-    headers[i] = static_cast<char>(next);
-    if (i >= 3 && std::string_view(headers + i - 3, 4) == "\r\n\r\n") {
-      return {headers, i + 1};
+    const size_t remaining = sizeof(headers) - length;
+    const size_t count = boundary.Scan({bytes, available < remaining ? available : remaining});
+    std::memcpy(headers + length, bytes, count);
+    client.peekConsume(count);
+    length += count;
+    if (boundary.Complete()) {
+      return {headers, length};
     }
   }
   SendStatus(client, Status::HeadersTooLarge);
@@ -287,14 +297,13 @@ void HandleDrawing(WiFiClient& client, uint32_t started, std::string_view header
     SendDrawError(client, parsed);
     return;
   }
-  static matrix::Rgb frame[matrix::PixelCount];  // One active HTTP request; keep it off the TLS call stack.
-  const auto result = model_api::Draw(prompt, frame);
+  const auto result = model_api::Draw(std::move(prompt), requestFrame);
   if (result.status != 200) {
     SendDrawError(client, result);
     return;
   }
-  render(frame);
-  SendDrawFrame(client, frame);
+  render(requestFrame);
+  SendDrawFrame(client, requestFrame);
 }
 
 void HandleWifi(WiFiClient& client, uint32_t started, std::string_view headers,
@@ -377,9 +386,8 @@ void HandleClient(WiFiClient& client, FrameRenderer render) {
     return;
   }
 
-  matrix::Rgb frame[matrix::PixelCount];
-  if (ReadBody(client, started, reinterpret_cast<uint8_t*>(frame), frame_http::FrameBytes)) {
-    render(frame);
+  if (ReadBody(client, started, reinterpret_cast<uint8_t*>(requestFrame), frame_http::FrameBytes)) {
+    render(requestFrame);
     SendStatus(client, Status::Ready);
   }
 }

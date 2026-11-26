@@ -16,6 +16,6 @@ struct Result {
 bool IsConfigured();
 Result Configure(const char* body, unsigned int length);
 Result ParsePrompt(const char* body, unsigned int length, String& prompt);
-Result Draw(const String& prompt, matrix::Rgb (&frame)[matrix::PixelCount]);
+Result Draw(String prompt, matrix::Rgb (&frame)[matrix::PixelCount]);
 
 }  // namespace model_api

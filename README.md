@@ -80,7 +80,7 @@ curl.exe -i -H "Content-Type: application/octet-stream" --data-binary "x" http:/
 
 ## Проверки прошивки без платы
 
-Проверка раскладки, формата кадра, настроек Wi-Fi, запросов веб-страницы и разбора ответа модели (нужен компилятор C++17; подходит `xtensa-lx106-elf-g++` из пакета ESP8266):
+Проверка раскладки, формата кадра, настроек Wi-Fi, границы локальных HTTP-заголовков и потокового разбора ответа модели (нужен компилятор C++17; подходит `xtensa-lx106-elf-g++` из пакета ESP8266):
 
 ```powershell
 $tests = Get-ChildItem tests/firmware/*Tests.cpp | ForEach-Object FullName

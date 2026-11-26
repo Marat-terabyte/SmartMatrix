@@ -4,6 +4,32 @@
 
 namespace matrix_http {
 
+// Return the bytes to consume, never including any bytes of the HTTP body.
+class HeaderEnd {
+ public:
+  constexpr std::size_t Scan(std::string_view bytes) {
+    constexpr std::string_view separator = "\r\n\r\n";
+    if (Complete()) {
+      return 0;
+    }
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+      if (bytes[i] == separator[matched_]) {
+        if (++matched_ == separator.size()) {
+          return i + 1;
+        }
+      } else {
+        matched_ = bytes[i] == '\r' ? 1 : 0;
+      }
+    }
+    return bytes.size();
+  }
+
+  constexpr bool Complete() const { return matched_ == 4; }
+
+ private:
+  std::size_t matched_ = 0;
+};
+
 enum class Status {
   Ready,
   BadRequest,

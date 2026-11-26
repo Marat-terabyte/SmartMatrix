@@ -1,6 +1,7 @@
 #include "ModelApi.h"
 #include "DrawHttpRequest.h"
 #include "ModelFrame.h"
+#include "ProviderBody.h"
 #include "ProviderRoots.h"
 
 #include <ArduinoJson.h>
@@ -61,33 +62,98 @@ bool Append(String& out, std::string_view part) {
   return part.empty() || out.concat(part.data(), part.size());
 }
 
-class ResponseBody : public Print {
+class ProviderInput {
  public:
-  explicit ResponseBody(String& output) : output_(output) {}
+  explicit ProviderInput(WiFiClient& stream) : stream_(stream), started_(millis()) {}
 
-  int availableForWrite() override { return tooLarge || outOfMemory ? 0 : 512; }
-  bool outputCanTimeout() override { return false; }
-  size_t write(uint8_t byte) override { return write(&byte, 1); }
-  size_t write(const uint8_t* data, size_t length) override {
-    if (length > MaxResponse - output_.length()) {
-      tooLarge = true;
-      return 0;
+  int read() {
+    if (offset_ < length_) {
+      return bytes_[offset_++];
     }
-    if (!output_.concat(reinterpret_cast<const char*>(data), length)) {
-      outOfMemory = true;
-      return 0;
+    while (millis() - started_ < IoTimeoutMs) {
+      const int available = stream_.available();
+      if (available > 0) {
+        const auto size = static_cast<size_t>(available);
+        const int count = stream_.read(bytes_, size < sizeof(bytes_) ? size : sizeof(bytes_));
+        if (count > 0) {
+          length_ = count;
+          offset_ = 1;
+          return bytes_[0];
+        }
+      }
+      if (!stream_.connected()) {
+        return provider_body::End;
+      }
+      delay(1);
     }
-    return length;
+    return provider_body::Timeout;
   }
 
-  bool tooLarge = false;
-  bool outOfMemory = false;
-
  private:
-  String& output_;
+  WiFiClient& stream_;
+  uint32_t started_;
+  size_t length_ = 0;
+  size_t offset_ = 0;
+  uint8_t bytes_[128];
 };
 
-Result Fetch(WiFiClient& connection, String& payload, String& response,
+Result ReadProviderFrame(HTTPClient& api, matrix::Rgb (&frame)[matrix::PixelCount]) {
+  using provider_body::Framing;
+  using provider_body::State;
+
+  const auto encoding = api.header("Content-Encoding");
+  if (encoding.length() && !encoding.equalsIgnoreCase("identity")) {
+    return {502, F("Сжатый ответ провайдера не поддерживается.")};
+  }
+  const auto transfer = api.header("Transfer-Encoding");
+  if (transfer.length() && !transfer.equalsIgnoreCase("chunked")) {
+    return {502, F("Формат передачи ответа провайдера не поддерживается.")};
+  }
+  const int size = api.getSize();
+  const auto framing = transfer.length() ? Framing::Chunked :
+                       size >= 0 ? Framing::FixedLength : Framing::UntilClose;
+  if (framing == Framing::FixedLength && size > static_cast<int>(MaxResponse)) {
+    return {502, F("Ответ провайдера превышает 8192 байта.")};
+  }
+  auto* stream = api.getStreamPtr();
+  if (!stream) {
+    return {502, F("Ответ провайдера пуст или получен не полностью.")};
+  }
+
+  ProviderInput input(*stream);
+  provider_body::Reader body(input, framing, size >= 0 ? size : 0, MaxResponse);
+  JsonDocument filter;
+  filter["choices"][0]["message"]["content"] = true;
+  if (filter.overflowed()) {
+    return {503, F("ESP не хватает памяти для ответа.")};
+  }
+  JsonDocument json;
+  const auto error = deserializeJson(json, body, DeserializationOption::Filter(filter),
+                                     DeserializationOption::NestingLimit(16));
+  if (!error) {
+    body.FinishJson();
+  }
+  switch (body.state()) {
+    case State::TooLarge: return {502, F("Ответ провайдера превышает 8192 байта.")};
+    case State::TimedOut: return {504, F("Провайдер не закончил ответ вовремя.")};
+    case State::Invalid: return {502, F("Ответ провайдера оборван или содержит лишние данные.")};
+    case State::Reading:
+    case State::Complete: break;
+  }
+  if (error == DeserializationError::NoMemory) {
+    return {503, F("ESP не хватает памяти для ответа.")};
+  }
+  if (error) {
+    return {502, F("Провайдер не вернул ожидаемый JSON.")};
+  }
+  const auto content = json["choices"][0]["message"]["content"].as<JsonString>();
+  if (content.isNull() || !ParseFrame({content.c_str(), content.size()}, frame)) {
+    return {502, F("Модель не вернула корректный кадр 16×16.")};
+  }
+  return {200, nullptr};
+}
+
+Result Fetch(WiFiClient& connection, String& payload, matrix::Rgb (&frame)[matrix::PixelCount],
              BearSSL::WiFiClientSecure* secure = nullptr) {
   HTTPClient api;
   if (!api.begin(connection, settings.host, settings.port, settings.endpoint, settings.tls)) {
@@ -105,9 +171,10 @@ Result Fetch(WiFiClient& connection, String& payload, String& response,
     }
     api.addHeader(F("Authorization"), authorization);
   }
-  const char* headers[] = {"Content-Encoding"};
-  api.collectHeaders(headers, 1);
+  const char* headers[] = {"Content-Encoding", "Transfer-Encoding"};
+  api.collectHeaders(headers, sizeof(headers) / sizeof(headers[0]));
   const int status = api.POST(reinterpret_cast<uint8_t*>(payload.begin()), payload.length());
+  payload = String();  // The JSON request is no longer needed while reading the response.
   if (status < 0) {
     if (secure && secure->getLastSSLError() != 0) {
       if (settings.insecureTls) {
@@ -123,35 +190,10 @@ Result Fetch(WiFiClient& connection, String& payload, String& response,
   if (status != 200) {
     return {502, F("Провайдер отклонил запрос."), status};
   }
-  const auto encoding = api.header("Content-Encoding");
-  if (encoding.length() && !encoding.equalsIgnoreCase("identity")) {
-    return {502, F("Сжатый ответ провайдера не поддерживается.")};
-  }
-  if (api.getSize() > static_cast<int>(MaxResponse)) {
-    return {502, F("Ответ провайдера превышает 8192 байта.")};
-  }
-  if (api.getSize() > 0 && !response.reserve(api.getSize())) {
-    return {503, F("ESP не хватает памяти для ответа.")};
-  }
-  ResponseBody body(response);
-  const int read = api.writeToPrint(&body);
-  if (body.tooLarge) {
-    return {502, F("Ответ провайдера превышает 8192 байта.")};
-  }
-  if (body.outOfMemory) {
-    return {503, F("ESP не хватает памяти для ответа.")};
-  }
-  if (read == HTTPC_ERROR_READ_TIMEOUT) {
-    return {504, F("Провайдер не закончил ответ вовремя.")};
-  }
-  if (read <= 0 || read != static_cast<int>(response.length()) ||
-      (api.getSize() >= 0 && read != api.getSize())) {
-    return {502, F("Ответ провайдера пуст или получен не полностью.")};
-  }
-  return {200, nullptr};
+  return ReadProviderFrame(api, frame);
 }
 
-Result RequestFrame(const String& prompt, String& response) {
+Result RequestFrame(String& prompt, matrix::Rgb (&frame)[matrix::PixelCount]) {
   String payload;
   {
     JsonDocument request;
@@ -168,10 +210,11 @@ Result RequestFrame(const String& prompt, String& response) {
       return {503, F("ESP не хватает памяти для запроса.")};
     }
   }
+  prompt = String();  // The prompt is now present in the serialized request.
 
   if (!settings.tls) {
     WiFiClient plain;
-    return Fetch(plain, payload, response);
+    return Fetch(plain, payload, frame);
   }
 
   BearSSL::X509List roots;
@@ -191,7 +234,7 @@ Result RequestFrame(const String& prompt, String& response) {
   } else {
     secure.setTrustAnchors(&roots);
   }
-  return Fetch(secure, payload, response, &secure);
+  return Fetch(secure, payload, frame, &secure);
 }
 
 void BeginTimeSync() {
@@ -290,29 +333,11 @@ Result ParsePrompt(const char* body, unsigned int length, String& prompt) {
   return {200, nullptr};
 }
 
-Result Draw(const String& prompt, matrix::Rgb (&frame)[matrix::PixelCount]) {
+Result Draw(String prompt, matrix::Rgb (&frame)[matrix::PixelCount]) {
   if (!IsConfigured()) {
     return {409, F("Сначала сохраните настройки API.")};
   }
-  String response;
-  const auto result = RequestFrame(prompt, response);
-  if (result.status != 200) {
-    return result;
-  }
-  // Keep only the field we need; provider metadata and error bodies are never echoed.
-  JsonDocument filter;
-  filter["choices"][0]["message"]["content"] = true;
-  JsonDocument json;
-  if (filter.overflowed() ||
-      deserializeJson(json, response, DeserializationOption::Filter(filter),
-                      DeserializationOption::NestingLimit(16))) {
-    return {502, F("Провайдер не вернул ожидаемый JSON.")};
-  }
-  const auto content = json["choices"][0]["message"]["content"].as<JsonString>();
-  if (content.isNull() || !ParseFrame({content.c_str(), content.size()}, frame)) {
-    return {502, F("Модель не вернула корректный кадр 16×16.")};
-  }
-  return {200, nullptr};
+  return RequestFrame(prompt, frame);
 }
 
 }  // namespace model_api
